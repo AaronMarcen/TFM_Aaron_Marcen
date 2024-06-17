@@ -1,5 +1,5 @@
 # TFM_Aarón_Marcén
-Repositorio en el que se adjuntan los scripts de R-Markdown y los informes HTML de mi TFM. Además de todos los archivos necesarios para generar los análisis y los arcivos de resultados.
+Repositorio en el que se adjuntan los scripts de R-Markdown y los informes HTML de mi TFM. Además de todos los archivos necesarios para generar los análisis y los archivos de resultados.
 
 Para el desarrollo de este trabajo final de máster llamado **Análisis Transcriptómico del DLBCL con afectación al sistema nervioso central**, se han generado 3 workflows:
 - El primero con el tratamiento de los datos y el control de calidad, llamado: **Tratamiento_datos_QC**.
