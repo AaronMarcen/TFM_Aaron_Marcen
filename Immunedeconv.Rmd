@@ -1,0 +1,1080 @@
+---
+title: "Deconvolución del TME"
+subtitle: "Transcriptómica HTG"
+author: "Aarón Marcén"
+date: "2024-05-02"
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, warning = F, message = F)
+options(tinytex.verbose = TRUE)
+```
+
+```{r librerias, include=FALSE, warning=FALSE, message=FALSE}
+
+# Función de instalación de paquetes R base
+installifnot <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    install.packages(pkg)
+  }
+}
+# Función de instalación de paquetes de Bioconductor
+installifnot_Bioc <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    BiocManager::install(pkg)
+  }
+}
+# Función de instalación de paquetes de Github
+installifnot_Github <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    install_github(pkg)
+  }
+}
+installifnot_Bioc("preprocessCore")
+installifnot_Bioc("Biobase")
+installifnot_Bioc("GSVA")
+installifnot_Bioc("sva")
+installifnot_Bioc("GSEABase")
+
+library(devtools)
+installifnot_Github('dviraran/xCell')
+installifnot_Github('GfellerLab/EPIC')
+install_github('ebecht/MCPcounter/Source')
+installifnot_Github('icbi-lab/immunedeconv')
+library(immunedeconv)
+
+installifnot("here")
+installifnot("readxl")
+installifnot("readr")
+installifnot("tidyr")
+installifnot("tidyverse")
+installifnot("paletteer")
+installifnot("circlize")
+installifnot("car")
+installifnot_Bioc("TxDb.Hsapiens.UCSC.hg38.knownGene")
+```
+
+```{r IOBR setup, include=FALSE, warning=FALSE, message=FALSE}
+if (!requireNamespace("BiocManager", quietly = TRUE)) 
+  install.packages("BiocManager")
+
+# Función de instalación de paquetes 
+installifnot <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    install.packages(pkg)
+  }
+}
+# Función de instalación de paquetes de Bioconductor
+installifnot_Bioc <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    BiocManager::install(pkg)
+  }
+}
+paquetes_cran <- c('tibble', 'survival', 'survminer', 'limma', 'devtools', 'limSolve', 'e1071', 'preprocessCore', 'tidyHeatmap', 'caret', 'FactoMineR', 'patchwork', 'ggplot2', 'ggpubr', 'pheatmap','RColorBrewer')
+
+for (pkg in paquetes_cran) {
+  installifnot(pkg)}
+
+paquetes_bioc <- c('DESeq2', 'GSVA', 'biomaRt', 'ComplexHeatmap')
+
+for (pkg in paquetes_bioc) {
+  installifnot_Bioc(pkg)}
+```
+
+```{r install IOBR, include=FALSE, warning=FALSE, message=FALSE}
+if (!requireNamespace("IOBR", quietly = TRUE))
+  devtools::install_github("IOBR/IOBR")
+```
+
+```{r install cibersort}
+set_cibersort_binary("C:/Users/aaron/AppData/Local/R/win-library/4.3/Cibersort/CIBERSORT.R")
+set_cibersort_mat("C:/Users/aaron/AppData/Local/R/win-library/4.3/Cibersort/LM22.txt")
+```
+
+```{r asignaciones}
+counts <- "counts.xlsx"
+meta <- "meta.xlsx"
+```
+
+```{r importación}
+# Asignación de una ruta relativa asociada al directorio de trabajo 
+ruta1 <- here(counts)
+ruta2 <- here(meta)
+  
+counts <- read_excel(ruta1)
+meta <- read_excel(ruta2)
+```
+
+```{r exlusión de muestras}
+muestras_NO_QC <- c("3-B17-17894", "3-B17-26615","3-B10-39759",
+                    "18-C14-03618","4-B16-38483-1","14-B19-09150-A1",
+                    "4-B19-09868-B1", "18-B20-24791", "18-N20-00167-A14N",
+                    "14-B16-38017-Normal")
+
+# Eliminar las columnas del dataframe counts
+counts <- counts[, !colnames(counts) %in% muestras_NO_QC]
+
+# Eliminar las filas del dataframe meta
+meta <- meta[!meta$id %in% muestras_NO_QC, ]
+```
+
+```{r rownames}
+counts <- base::as.data.frame(counts)
+meta <- base::as.data.frame(meta)
+rn_meta <- meta$id
+rn_counts <- counts$id
+meta <- meta[,-1]
+counts <- counts[,-1]
+rownames(meta) <- rn_meta
+rownames(counts) <- rn_counts
+```
+
+## Prefiltrado
+
+Se realiza un prefiltrado de los genes con muy poca expresión. Se utiliza como umbral de prefiltrado, 58 counts por gen y muestra.
+
+```{r Prefiltrado}
+# Prefiltrado  
+keep <- rowSums(counts) >= 58 * dim(counts)[2]
+counts_pf <- counts[keep,]
+
+print(paste0("Número inicial de genes: ", dim(counts)[1]))
+print(paste0("Número de genes despreciados en el pre-filtrado: ", sum(!keep)))
+print(paste0("Número de genes que pasan el prefiltrado: ", dim(counts_pf)[1]))
+```
+
+## Normalización
+
+Se normaliza la matriz de counts mediante normalización TPM con la función `count2tpm()` del paquete `IOBR`.
+
+```{r Normalización TPM, warning=FALSE}
+# Normalización TPM con la función count2tpm() del paquete IOBR
+library(IOBR)
+tpm_counts <- count2tpm(counts_pf,
+                        idType = "Symbol",
+                        org = "hsa",
+                        source = "biomart")
+
+# Se almacenan los genes omitidos en la normalización TPM
+genes_omitidos <- setdiff(rownames(counts_pf), rownames(tpm_counts))
+print(paste0("Número de genes omitidos durante la normalización TPM, debido a que su longitud no está disponible en Biomart: ", dim(counts_pf)[1]-dim(tpm_counts)[1]))
+```
+
+```{r Normalización TPM2}
+# Si count2tpm falla por la opción source = "biomart" se importa el archivo normalizado que se ejecutó con la función count2tpm del anterior chunk
+#tpm_counts <- "tpm_counts.csv"
+#ruta3 <- here(tpm_counts)
+#tpm_counts <- read_csv(ruta3)
+#tpm_counts <- as.data.frame(tpm_counts)
+#rownames(tpm_counts) <- tpm_counts[,1]
+#tpm_counts <- tpm_counts[,-1]
+```
+
+## Deconvolución
+
+```{r deconvolución TME}
+# Deconvoluciones en Immunedeconv
+imm_epic <- deconvolute(tpm_counts, method = "epic")
+imm_qti <- deconvolute(tpm_counts, method = "quantiseq") 
+imm_xcell <- deconvolute(tpm_counts, method = "xcell")
+
+#write.csv(imm_epic, file = "imm_epic.csv")
+#write.csv(imm_qti, file = "imm_qti.csv")
+```
+
+```{r Reformatear immunedeconv dataframes}
+# Transponer y cambiar colnames
+std.im.df <- function(imm_df){
+  imm_df <- as.data.frame(t(imm_df))
+  celltype_imm <- imm_df[1,]
+  imm_df <- imm_df[-1,]
+  colnames(imm_df) <- celltype_imm
+  imm_df[-1,]
+  rn_imm <- rownames(imm_df)
+  imm_df <- as.data.frame(sapply(imm_df, as.numeric))
+  rownames(imm_df) <- rn_imm
+  return(imm_df)
+}
+
+imm_epic <- std.im.df(imm_epic)
+imm_qti <- std.im.df(imm_qti)
+imm_xcell <- std.im.df(imm_xcell)
+
+# Se incluye la variable meta$Group en los dataframes
+all(rownames(meta)==rownames(imm_epic)) # Mismos casos en mismo orden
+all(rownames(meta)==rownames(imm_qti))
+all(rownames(meta)==rownames(imm_xcell))
+
+imm_epic$Group <- factor(meta$Group)
+imm_qti$Group <- factor(meta$Group)
+imm_xcell$Group <- factor(meta$Group)
+```
+
+# Abundancia Celular por Poblaciones
+
+```{r}
+# Función generadora de gráficos con estética similar a plotCounts
+plot_imm <- function(imm_df) {
+  # Vector con los nombres de las columnas excepto la última
+  column_names <- names(imm_df)[-ncol(imm_df)]
+  
+  # Bucle for para generar gráficos para cada columna
+  for (col_name in column_names) {
+    # Calcular las medias por grupo
+    means_df <- imm_df %>%
+      group_by(Group) %>%
+      summarize(mean_value = mean(.data[[col_name]] * 100, na.rm = TRUE))
+    
+    print(
+      ggplot(imm_df, aes(x = Group, y = .data[[col_name]] * 100, 
+                         fill = Group, color = Group)) +
+        geom_jitter(alpha = 1, width = 0.3, height = 0) +  
+        geom_boxplot(fill = "white", alpha = 0.5, outlier.alpha = 1) +  
+        geom_point(data = means_df, aes(x = Group, y = mean_value, fill = Group), 
+                   shape = 22, color = "black", size = 3, stroke = 1.5, 
+                   show.legend = F) +  
+        labs(x = NULL, y = "Abundance (%)", title = col_name) +
+        scale_y_continuous(labels = scales::percent_format(scale = 1),
+                           limits = c(0, NA))+
+        theme(axis.text.x = element_blank())
+    )
+  }
+}
+
+plot_xcel <- function(imm_df) {
+  # Vector con los nombres de las columnas excepto la última
+  column_names <- names(imm_df)[-ncol(imm_df)]
+  
+  # Bucle for para generar gráficos para cada columna
+  for (col_name in column_names) {
+    # Calcular las medias por Group
+    means_df <- imm_df %>%
+      group_by(Group) %>%
+      summarize(mean_value = mean(.data[[col_name]], na.rm = TRUE))
+    
+    print(
+      ggplot(imm_df, aes(x = Group, y = .data[[col_name]], 
+                         fill = Group, color = Group)) +
+        geom_jitter(alpha = 1, width = 0.3, height = 0) +  
+        geom_boxplot(fill = "white", alpha = 0.5, outlier.alpha = 1) +  
+        geom_point(data = means_df, aes(x = Group, y = mean_value, fill = Group), 
+                   shape = 22, color = "black", size = 3, stroke = 1.5,
+                   show.legend = F) +  
+        labs(x = NULL, y = "Abundance (arbitrary value)", title = col_name) +
+        scale_y_continuous(expand = expansion(add = c(0, 0.1)))  +
+        theme(axis.text.x = element_blank())
+    )
+  }
+}
+```
+
+## Resultados de la deconvolución con EPIC
+
+```{r}
+# Resultados de la deconvolución con EPIC en Immunedeconv
+plot_imm(imm_epic)
+```
+
+## Resultados de la deconvolución con quanTIseq
+
+```{r}
+# Resultados de la deconvolución con quanTIseq en Immunedeconv
+plot_imm(imm_qti)
+```
+
+## Resultados de la deconvolución con xCell
+
+```{r}
+# Resultados de la deconvolución con xcell en Immunedeconv
+plot_xcel(imm_xcell)
+```
+
+## Resultados de la deconvolución con CIBERSORTx
+
+```{r setup cibersort}
+# Matriz de entrada para cibersort
+tpm_counts_cbs <- data.frame(Gene = rownames(tpm_counts))
+tpm_counts_cbs <- cbind(tpm_counts_cbs, tpm_counts)
+rownames(tpm_counts_cbs) <- NULL
+#write.table(tpm_counts_cbs, file = "tpm_counts_cbs.txt", sep = "\t", row.names = F)
+```
+
+```{r cibersort immunedeconv}
+# Deconvolución en Immunedeconv con Cibersort
+#imm_cib <- deconvolute(tpm_counts, method = "cibersort_abs")
+```
+
+Dado que mediante el paquete `immunedeconv`, no es posible ejecutar la deconvoloución del TME con CIBERSORTx, utilizando el código fuente original. Se ejecuta la deconvolución en el servidor web <https://cibersortx.stanford.edu/>. Una vez realizada la deconvolución se descarga la matriz de resultados y se importa a R. Esta matriz de resultados, contiene los valores absolutos de cada fracción celular por muestra y el valor total (sumatorio) en su última columna. Para obtener cada fracción celular (valor relativo respecto al total), se procede a crear una nueva matriz con cada ratio.
+
+```{r importación cibersort_results}
+# Importación del dataframe con los resultados de CIBERSORTx (servidor web)
+cibersort_data <- "CIBERSORTx_Results.csv"
+ruta4 <- here(cibersort_data)
+cibersort_data <- read_csv(ruta4)
+cibersort_data <- as.data.frame(cibersort_data)
+rownames(cibersort_data) <- cibersort_data$Mixture
+cibersort_data <- cibersort_data[,-1]
+
+# Se eliminan columnas innecesarias
+cibersort_data <- cibersort_data[, !colnames(cibersort_data) %in% c("P-value", "Correlation", "RMSE")]
+
+# Dataframe de valores realativos en % de cibersort_data
+cib_res <- cibersort_data / cibersort_data$`Absolute score (sig.score)`
+
+# Se elimina la última columna: `Absolute score (sig.score)`
+cib_res <- cib_res[,-(dim(cib_res)[2])]
+
+```
+
+```{r}
+# Se incluye la variable meta$Group en el dataframe
+all(rownames(meta)==rownames(cib_res)) # Mismos casos en mismo orden
+
+cib_res$Group <- factor(meta$Group)
+
+# Resultados de la deconvolución con CIBERSORTx
+plot_imm(cib_res)
+```
+
+# Composición celular del TME
+
+## Composición celular del TME por Muestra
+
+```{r}
+plot_bar <- function(df, paleta, titulo, legend.position) {
+  df <- rownames_to_column(df, var = "Muestra")
+  df <- pivot_longer(df, cols = colnames(df)[2:(ncol(df)-1)],
+                     names_to = "Tipo_cel", values_to = "Valor")
+  df$Muestra <- factor(df$Muestra, levels = rev(unique(df$Muestra)))
+  df$Tipo_cel <- factor(df$Tipo_cel, levels = rev(unique(df$Tipo_cel)))
+  
+  ggplot(df, aes(x = Muestra, y = Valor, fill = Tipo_cel)) +
+    geom_bar(stat = "identity") +
+    labs(title = titulo,
+         x = "Muestras",
+         y = " Fracción celular (%)") +
+    coord_flip() +
+    guides(fill = guide_legend(reverse = TRUE)) +
+    scale_fill_manual(values = paleta) + 
+    theme_minimal() +
+    theme(legend.position = legend.position,
+          axis.text.y = element_text(size = 4)) +  
+    scale_y_continuous(labels = scales::percent)
+}
+
+paleta_imm <- c("grey95","#FB8072","#FFED6F","#6F6C87","#94DFD1","#FDB462", "#B3DE69", "#FFB1D9")
+
+paleta_qti <- c("grey95","#B3DE69","#6F6C87","#94DFD1","#FDB462",
+                "#FB8072","#FFFFB3","#8BB07A","#FFED6F","#80B1D3","#FFB1D9")
+
+#"#CCEBC5""#B5DED4","#8DD3C7","#FCCDE5","#8C564B","#1B9E77","#9467BD","#FF9D00"
+
+paleta_cib <- c("#FFFFB3","#8E0000","#2CA02C","#BEE7B3","#BCBD22","#2B3D26",
+                "#FFED6F","#80B1D3","#B4E766","#8BB07A","#D62728","#FB8072",
+                "#1F77B4","#6F6C87","#BF5F4C","#FF7800","#FFAA00",
+                "#FDB462","#94DFD1","#CB2CFF","#E377C2","#FFB1D9")
+```
+
+```{r}
+plot_bar(imm_epic, paleta_imm, "EPIC", "right")
+plot_bar(imm_epic, paleta_imm, "EPIC", "none")
+
+plot_bar(imm_qti, paleta_qti, "quanTIseq", "right")
+plot_bar(imm_qti, paleta_qti, "quanTIseq", "none")
+
+plot_bar(cib_res, paleta_cib, "CIBERSORTx abs", "right")
+plot_bar(cib_res, paleta_cib, "CIBERSORTx abs", "none")
+```
+
+## Composición celular del TME por Grupo
+
+```{r}
+# Crear una función para generar el gráfico con los promedios por Group
+plot_bar_group <- function(df, paleta, titulo, legend_position = "right") {
+  # Guardar los niveles originales de Tipo_cel
+  niveles_tipo_cel <- colnames(df)[1:(ncol(df) - 1)]
+  
+  promedios <- df %>%
+    rownames_to_column(var = "Muestra") %>%
+    pivot_longer(cols = niveles_tipo_cel,
+                 names_to = "Tipo_cel", values_to = "Valor") %>%
+    group_by(Group, Tipo_cel) %>%
+    summarise(Promedio = mean(Valor, na.rm = TRUE)) %>%
+    ungroup()
+  
+  promedios$Group <- factor(promedios$Group, levels = rev(unique(promedios$Group)))
+  promedios$Tipo_cel <- factor(promedios$Tipo_cel, levels = rev(niveles_tipo_cel))
+
+  ggplot(promedios, aes(x = Group, y = Promedio, fill = Tipo_cel)) +
+    geom_bar(stat = "identity") +
+    labs(title = titulo,
+         x = "Group",
+         y = "Fracción Celular Promedio (%)") +
+    coord_flip() +
+    guides(fill = guide_legend(reverse = TRUE)) + 
+    scale_fill_manual(values = paleta) +  
+    theme_minimal() +
+    theme(legend.position = legend_position,  
+          axis.text.y = element_text(size = 8)) +  
+    scale_y_continuous(labels = scales::percent)
+}
+
+```
+
+```{r}
+plot_bar_group(imm_epic, paleta_imm, "EPIC", "right")
+plot_bar_group(imm_epic, paleta_imm, "EPIC", "none")
+
+plot_bar_group(imm_qti, paleta_qti, "quanTIseq", "right")
+plot_bar_group(imm_qti, paleta_qti, "quanTIseq", "none")
+
+plot_bar_group(cib_res, paleta_cib, "CIBERSORTx abs", "right")
+plot_bar_group(cib_res, paleta_cib, "CIBERSORTx abs", "none")
+```
+
+```{r}
+# Crear una función para generar el gráfico con los promedios por Group
+plot_bar_group2 <- function(df, paleta, titulo, legend_position = "right") {
+  
+   # Guardar los niveles originales de Tipo_cel
+  niveles_tipo_cel <- colnames(df)[1:(ncol(df) - 1)]
+  
+  promedios <- df %>%
+    rownames_to_column(var = "Muestra") %>%
+    pivot_longer(cols = colnames(df)[1:(ncol(df) - 1)],
+                 names_to = "Tipo_cel", values_to = "Valor") %>%
+    group_by(Group, Tipo_cel) %>%
+    summarise(Promedio = mean(Valor, na.rm = TRUE)) %>%
+    ungroup()
+  
+  promedios$Group <- factor(promedios$Group, levels = unique(promedios$Group))
+  promedios$Tipo_cel <- factor(promedios$Tipo_cel, levels = niveles_tipo_cel)
+
+  ggplot(promedios, aes(x = Group, y = Promedio, fill = Tipo_cel)) +
+    geom_bar(stat = "identity", position = "dodge")+
+    labs(title = titulo,
+         x = "Group",
+         y = "Fracción Celular Promedio (%)") +
+    scale_fill_manual(values = rev(paleta)) + 
+    theme_minimal() +
+    theme(legend.position = legend_position,  
+           axis.text.x = element_text(size = 8)) +  
+    scale_y_sqrt(labels = scales::percent)
+}
+```
+
+```{r}
+plot_bar_group2(imm_epic, paleta_imm, "EPIC", "right")
+plot_bar_group2(imm_epic, paleta_imm, "EPIC", "none")
+
+plot_bar_group2(imm_qti, paleta_qti, "quanTIseq", "right")
+plot_bar_group2(imm_qti, paleta_qti, "quanTIseq", "none")
+
+plot_bar_group2(cib_res, paleta_cib, "CIBERSORTx abs", "right")
+plot_bar_group2(cib_res, paleta_cib, "CIBERSORTx abs", "none")
+```
+
+# Contrastes de Hipótesis
+
+## Normalidad & Homocedasticidad
+
+Se comprueba la normalidad de las fracciones por grupo y tipo celular y la homocedasticidad entre los grupos PCNSL vs SCNSL y DLBCL with CNS inv vs DLBCL wo CNS inv, para cada tipo celular. La conclusión es que para algunos tipos celulares la distribución de las fracciones celulares de cada grupo, no siguen una normal. (Se ha comprobado los resultados de EPIC).
+
+```{r}
+prueba_norm <- function(df) {
+  # Cargar las librerías necesarias
+  library(tidyverse)
+  
+  # Transformar el dataframe a formato largo
+  df_largo <- df %>%
+    pivot_longer(-Group, 
+                 names_to = "TipoCelular", values_to = "Fraccion")
+  
+  # Comprobar la normalidad usando el test de Shapiro-Wilk
+  resultados_normalidad <- df_largo %>%
+    group_by(TipoCelular, Group) %>%
+    summarise(shapiro_test = list(shapiro.test(Fraccion))) %>%
+    mutate(p.value = map_dbl(shapiro_test, "p.value"))
+  
+  print(resultados_normalidad)
+}
+
+prueba_var <- function(df) {
+  # Cargar las librerías necesarias
+  library(tidyverse)
+  
+  # Transformar el dataframe a formato largo
+  df_largo <- df %>%
+    pivot_longer(-Group, 
+                 names_to = "TipoCelular", values_to = "Fraccion")
+  
+  # Comprobar la normalidad usando el test de Shapiro-Wilk
+  resultados_homocedasticidad <- df_largo %>%
+    group_by(TipoCelular, Group) %>%
+    summarise(levene_test = list(leveneTest(Fraccion))) %>%
+    mutate(p.value = map_dbl(shapiro_test, "p.value"))
+  
+  print(resultados_normalidad)
+}
+```
+
+```{r}
+prueba_norm(imm_epic)
+```
+
+```{r}
+trans_formato_largo <- function(df) {
+  df_largo <- df %>%
+    pivot_longer(-Group, names_to = "TipoCelular", values_to = "Fraccion")
+  
+  return(df_largo)
+}
+epic_largo <- trans_formato_largo(imm_epic)
+qti_largo <- trans_formato_largo(imm_qti)
+cbs_largo <- trans_formato_largo(cib_res)
+xcell_largo <- trans_formato_largo(imm_xcell)
+```
+
+```{r}
+# Lista de grupos a comparar
+grupos <- list(c("PCNSL", "SCNSL"), c("DLBCL with CNS inv", "DLBCL wo CNS inv"))
+
+# Función para realizar las pruebas
+realizar_pruebas <- function(df, tipo_celular) {
+  # Filtrar el dataframe por el TipoCelular específico
+  df_tipo <- df[df$TipoCelular == tipo_celular, ]
+  
+  # Resultados de las pruebas de normalidad y homocedasticidad
+  resultados <- lapply(grupos, function(grupo) {
+    # Filtrar el dataframe por los grupos específicos
+    df_grupo <- df_tipo[df_tipo$Group %in% grupo, ]
+    
+    # Realizar la prueba de normalidad para cada grupo
+    normalidad <- lapply(grupo, function(g) shapiro.test(df_grupo$Fraccion[df_grupo$Group == g]))
+    
+    # Realizar la prueba de homocedasticidad entre los dos grupos
+    homocedasticidad <- leveneTest(Fraccion ~ Group, data = df_grupo)
+    
+    # Devolver los resultados
+    list(grupo = grupo, normalidad = normalidad, homocedasticidad = homocedasticidad)
+  })
+  
+  return(resultados)
+}
+
+# Aplicar las pruebas para cada TipoCelular
+resultados_por_tipo_celular <- lapply(unique(epic_largo$TipoCelular), function(tipo) {
+  realizar_pruebas(epic_largo, tipo)
+})
+
+# Imprimir los resultados
+names(resultados_por_tipo_celular) <- unique(epic_largo$TipoCelular)
+print(resultados_por_tipo_celular)
+
+
+```
+
+## Comparación entre Grupos
+
+Debido a que no se cumplen los supuestos de normalidad y/o homocedasticidad para todos los grupos en todos los tipos celulares, se decide hacer contrastes tanto paramétricos como no paramétricos. Más concretamente, debido a que el objetivo es hacer dos comparaciones independientes, entre dos grupos experimentales, para todos los tipos celulares de todos los métodos de deconvolución, se decide realizar pruebas T-Test `t.test` (comparación de medias, paramétrico) y pruebas U de Mann-Whitney `wilcox.test` (comparación de medianas, no paramétrico).
+
+```{r}
+cib_res_sum <- cib_res %>%
+  mutate(`Total B cells` = `B cells naive` + `B cells memory` + `Plasma cells`,
+         `Total Macrophages` = `Macrophages M0` + `Macrophages M1` + `Macrophages M2`,
+         `Total NK` = `NK cells activated` + `NK cells resting`,
+         `Total CD4 (non-regulatory)` = `T cells CD4 naive` + `T cells CD4 memory resting` + `T cells CD4 memory activated`,
+         Myeloid = Neutrophils + Eosinophils + `Mast cells resting` + `Mast cells activated` + `Dendritic cells resting` + `Dendritic cells activated`) %>%
+  select(-`B cells naive`, -`B cells memory`, -`Plasma cells`,
+         -`Macrophages M0`, -`Macrophages M1`, -`Macrophages M2`,
+         -`NK cells activated`, -`NK cells resting`,
+         -`T cells CD4 naive`, -`T cells CD4 memory resting`, -`T cells CD4 memory activated`,
+         -Neutrophils, -Eosinophils, -`Mast cells resting`, -`Mast cells activated`, -`Dendritic cells resting`, -`Dendritic cells activated`) %>% 
+  select(-Group, everything(), Group)
+
+```
+
+```{r}
+# Función para realizar las comparaciones U de Mann-Whitney
+U_Mann_Whitney <- function(df) {
+  # Lista para almacenar los resultados de ambos tests
+  resultados <- list()
+  
+  # Realizar la primera comparación: PCNSL vs SCNSL
+  for (col_name in colnames(df)[1:(ncol(df) - 1)]) {
+    resultado <- wilcox.test(df[[col_name]] ~ df$Group, subset = df$Group %in% c("PCNSL", "SCNSL"))
+    resultados[[paste0(col_name, "_PCNSL_vs_SCNSL")]] <- resultado
+  }
+  
+  # Realizar la segunda comparación: DLBCL with CNS inv vs DLBCL wo CNS inv
+  for (col_name in colnames(df)[1:(ncol(df) - 1)]) {
+    resultado <- wilcox.test(df[[col_name]] ~ df$Group, subset = df$Group %in% c("DLBCL with CNS inv", "DLBCL wo CNS inv"))
+    resultados[[paste0(col_name, "_DLBCL_with_CNS_inv_vs_wo_CNS_inv")]] <- resultado
+  }
+  
+  # Devolver los resultados
+  return(resultados)
+}
+```
+
+```{r}
+U_Mann_Whitney(cib_res_sum)
+```
+
+```{r}
+# Función para realizar las comparaciones U de Mann-Whitney a dataframe
+U_Mann_Whitney_table <- function(df) {
+  # Lista para almacenar los resultados de ambos tests
+  resultados <- list()
+  
+  # Realizar la primera comparación: PCNSL vs SCNSL
+  for (col_name in colnames(df)[1:(ncol(df) - 1)]) {
+    resultado <- wilcox.test(df[[col_name]] ~ df$Group, subset = df$Group %in% c("PCNSL", "SCNSL"))
+    resultados[[paste0(col_name, "_PCNSL_vs_SCNSL")]] <- c(col_name, "PCNSL vs SCNSL", resultado$p.value)
+  }
+  
+  # Realizar la segunda comparación: DLBCL with CNS inv vs DLBCL wo CNS inv
+  for (col_name in colnames(df)[1:(ncol(df) - 1)]) {
+    resultado <- wilcox.test(df[[col_name]] ~ df$Group, subset = df$Group %in% c("DLBCL with CNS inv", "DLBCL wo CNS inv"))
+    resultados[[paste0(col_name, "_DLBCL_with_CNS_inv_vs_wo_CNS_inv")]] <- c(col_name, "DLBCL with vs wo CNS inv", resultado$p.value)
+  }
+  
+  # Convertir la lista de resultados a un dataframe
+  resultados_df <- do.call(rbind, resultados)
+  colnames(resultados_df) <- c("Tipo_Celular", "Comparacion", "P-valor")
+  rownames(resultados_df) <- NULL
+  resultados_df <- as.data.frame(resultados_df)
+  
+  # Devolver el dataframe de resultados
+  return(resultados_df)
+}
+
+```
+
+```{r}
+umw_epic <- U_Mann_Whitney_table(imm_epic)
+umw_qti <- U_Mann_Whitney_table(imm_qti)
+umw_cbs <- U_Mann_Whitney_table(cib_res)
+umw_xcell <- U_Mann_Whitney_table(imm_xcell)
+
+umw_cbssum <- U_Mann_Whitney_table(cib_res_sum)
+```
+
+```{r}
+# Función para realizar las comparaciones U de Mann-Whitney a dataframe
+T_Test_table <- function(df) {
+  # Lista para almacenar los resultados de ambos tests
+  resultados <- list()
+  
+  # Realizar la primera comparación: PCNSL vs SCNSL
+  for (col_name in colnames(df)[1:(ncol(df) - 1)]) {
+    resultado <- t.test(df[[col_name]] ~ df$Group, subset = df$Group %in% c("PCNSL", "SCNSL"))
+    resultados[[paste0(col_name, "_PCNSL_vs_SCNSL")]] <- c(col_name, "PCNSL vs SCNSL", resultado$p.value)
+  }
+  
+  # Realizar la segunda comparación: DLBCL with CNS inv vs DLBCL wo CNS inv
+  for (col_name in colnames(df)[1:(ncol(df) - 1)]) {
+    resultado <- t.test(df[[col_name]] ~ df$Group, subset = df$Group %in% c("DLBCL with CNS inv", "DLBCL wo CNS inv"))
+    resultados[[paste0(col_name, "_DLBCL_with_CNS_inv_vs_wo_CNS_inv")]] <- c(col_name, "DLBCL with vs wo CNS inv", resultado$p.value)
+  }
+  
+  # Convertir la lista de resultados a un dataframe
+  resultados_df <- do.call(rbind, resultados)
+  colnames(resultados_df) <- c("Tipo_Celular", "Comparacion", "P-valor")
+  rownames(resultados_df) <- NULL
+  resultados_df <- as.data.frame(resultados_df)
+  
+  # Devolver el dataframe de resultados
+  return(resultados_df)
+}
+```
+
+```{r}
+tt_epic <- T_Test_table(imm_epic)
+tt_qti <- T_Test_table(imm_qti)
+tt_cbs <- T_Test_table(cib_res)
+tt_xcell <- T_Test_table(imm_xcell)
+
+tt_cbssum <- T_Test_table(cib_res_sum)
+```
+
+# Heatmaps
+
+```{r DESeq norm}
+dds <- DESeqDataSetFromMatrix(countData = counts_pf,
+                              colData = meta,
+                              design = ~ Group)
+dds <- DESeq(dds)
+
+# Extraer la matriz de counts normalizados con DESeq2
+normDESeq_counts <- counts(dds, normalized = TRUE)
+```
+
+```{r imm_epic heatmap}
+# Crear dataframe para heatmap
+h_imm_epic <- imm_epic
+all(rownames(h_imm_epic)==rownames(meta))
+
+# Transponer y estandarizar por filas
+h_imm_epic <- as.data.frame(t(h_imm_epic))
+h_imm_epic <- head(h_imm_epic, -1)
+rn_himmepic <- rownames(h_imm_epic)
+rn_himmepic[2] <- "CAFs"
+cl_himmepic <- colnames(h_imm_epic)
+h_imm_epic <- apply(h_imm_epic, 2, as.numeric) 
+h_imm_epic <- t(apply(h_imm_epic,1,scale))
+rownames(h_imm_epic) <- rn_himmepic
+colnames(h_imm_epic) <- cl_himmepic
+h_imm_epic <- as.data.frame(h_imm_epic)
+```
+
+```{r imm_qti heatmap}
+# Crear dataframe para heatmap
+h_imm_qti <- imm_qti
+all(rownames(h_imm_qti)==rownames(meta))
+
+# Transponer y estandarizar por filas
+h_imm_qti <- as.data.frame(t(h_imm_qti))
+h_imm_qti <- head(h_imm_qti, -1)
+rn_himmqti <- rownames(h_imm_qti)
+rn_himmqti[7] <- "T cell CD4+"
+rn_himmqti[9] <- "T cell regulatory"
+cl_himmqti <- colnames(h_imm_qti)
+h_imm_qti <- apply(h_imm_qti, 2, as.numeric) 
+h_imm_qti <- t(apply(h_imm_qti,1,scale))
+rownames(h_imm_qti) <- rn_himmqti
+colnames(h_imm_qti) <- cl_himmqti
+h_imm_qti <- as.data.frame(h_imm_qti)
+```
+
+```{r cib_res heatmap}
+# Crear dataframe para heatmap
+h_cib_res <- cib_res
+all(rownames(h_cib_res)==rownames(meta))
+
+# Transponer y estandarizar por filas
+h_cib_res <- as.data.frame(t(h_cib_res))
+h_cib_res <- head(h_cib_res, -1)
+rn_hcr <- rownames(h_cib_res)
+rn_hcr[9] <- "T cell regulatory"
+cl_hcr <- colnames(h_cib_res)
+h_cib_res <- apply(h_cib_res, 2, as.numeric) 
+h_cib_res <- t(apply(h_cib_res,1,scale))
+rownames(h_cib_res) <- rn_hcr
+colnames(h_cib_res) <- cl_hcr
+h_cib_res <- as.data.frame(h_cib_res)
+
+```
+
+```{r imm_xcell heatmap}
+# Crear dataframe para heatmap
+h_imm_xcell <- as.data.frame(imm_xcell)
+all(rownames(h_imm_xcell)==rownames(meta))
+
+# Renombrar nombres de poblaciones celulares antes de transponer
+h_imm_xcell <- h_imm_xcell %>%
+  rename('Myeloid DC activated' = 'Myeloid dendritic cell activated') %>%
+  rename('T cell CD4+' = 'T cell CD4+ (non-regulatory)') %>% 
+  rename('Myeloid DC' = 'Myeloid dendritic cell') %>% 
+  rename('CAFs' = 'Cancer associated fibroblast') %>% 
+  rename('Plasmacytoid DC' = 'Plasmacytoid dendritic cell') %>% 
+  rename('T cell regulatory' = 'T cell regulatory (Tregs)') 
+
+  # Transponer y estandarizar por filas
+h_imm_xcell <- as.data.frame(t(h_imm_xcell))
+h_imm_xcell <- head(h_imm_xcell, -4) 
+
+# Poblaciones celulares no interesantes
+xcell_row_delete <- c('Common lymphoid progenitor', 'Common myeloid progenitor',
+                   'Granulocyte-monocyte progenitor', 'Hematopoietic stem cell')
+
+h_imm_xcell <- h_imm_xcell %>%
+  filter(!row.names(.) %in% xcell_row_delete)  # Eliminar filas
+
+rn_himmxcell <- rownames(h_imm_xcell)
+cl_himmxcell <- colnames(h_imm_xcell)
+h_imm_xcell <- apply(h_imm_xcell, 2, as.numeric) 
+h_imm_xcell <- t(apply(h_imm_xcell,1,scale))
+rownames(h_imm_xcell) <- rn_himmxcell
+colnames(h_imm_xcell) <- cl_himmxcell
+h_imm_xcell <- as.data.frame(h_imm_xcell)
+```
+
+```{r meta heatmap}
+# Factorización de variables y renombrado en meta
+meta$Group <- as.factor(meta$Group) 
+meta$tissue_group <- as.factor(meta$tissue_group)
+levels(meta$Group)[levels(meta$Group) == 'REACTIVE BRAIN INFILTRATE'] <- 'RBI'
+colnames(meta)[colnames(meta) == "tumor cell content"] <- "tcc"
+```
+
+```{r deconv_heatmap function}
+deconv_heatmap <- function(deconvdata, metadata, normDESeq_counts = NULL, gene_list = NULL, title = '', cluster_rows = TRUE, cluster_columns = TRUE, show_legend = TRUE, rn_size = 8) {
+  
+  # Verificar si normDESeq_counts y gene_list son proporcionados
+  if (!is.null(normDESeq_counts) && !is.null(gene_list)) {
+    # Verificar que los genes en gene_list existen en normDESeq_counts
+    if (!all(gene_list %in% rownames(normDESeq_counts))) {
+      stop("Algunos genes en gene_list no existen en las filas de normDESeq_counts")
+    }
+    
+    # Verificar que el orden de las muestras sea el mismo en todos los dataframes
+    if (!all(colnames(deconvdata) == colnames(normDESeq_counts)) || 
+        !all(colnames(deconvdata) == rownames(metadata))) {
+      stop("El orden de las muestras no coincide entre deconvdata, normDESeq_counts y metadata")
+    }
+    
+    # Escalar los valores de expresión génica (Z-score) para los genes especificados
+    gene_data <- normDESeq_counts[gene_list, , drop = FALSE]
+    gene_data_z <- t(scale(t(gene_data)))
+    
+    # Combinar los datos de deconvolución con los datos de los genes
+    combined_data <- rbind(deconvdata, gene_data_z)
+  } else {
+    combined_data <- deconvdata
+  }
+  
+  # Definir paleta de colores
+  paleta_tcc <- colorRamp2(seq(0, 100, length.out = 20), 
+                            rev(paletteer_c("grDevices::YlOrRd", 20)))
+  
+  # Anotaciones
+  col_ann <- HeatmapAnnotation(
+    df = metadata[, c("Group", "tissue_group", "tcc")],
+    col = list( Group = c("PCNSL" = "#00BF7D","SCNSL" = "#E76BF3",
+                          "DLBCL with CNS inv" = "#F8766D",
+                          "DLBCL wo CNS inv" = "#C8AF00", "RBI" = "#00B0F6"),
+                
+                tissue_group = c("BMO" = "#FF9646","bone" ="mediumpurple1",
+                                 "CNS" = "palevioletred1",
+                                 "lymph node" = "lightskyblue",
+                                 "mucosa" = "lightgreen",
+                                 "soft tissue/skin"= "#FFF059"),
+                tcc = paleta_tcc),
+    gp = gpar(col = "grey60", lwd = 1),
+    annotation_name_gp = gpar(fontsize = 10),
+    show_legend = show_legend
+  )    
+
+  # Generar Heatmap
+  Heatmap(combined_data, 
+          column_title = title, 
+          cluster_rows = cluster_rows,
+          cluster_columns = cluster_columns,
+          column_names_gp = gpar(fontsize = 6), 
+          row_names_gp = gpar(fontsize = rn_size), 
+          rect_gp = gpar(col = "grey60", lwd = 1), 
+          name = 'Z-score', 
+          top_annotation = col_ann)
+}
+
+```
+
+```{r deconv_heatmap results}
+deconv_heatmap(h_imm_epic, meta, title = 'EPIC')
+deconv_heatmap(h_imm_epic, meta, title = 'EPIC', show_legend = F)
+
+deconv_heatmap(h_imm_qti, meta, title = 'quanTIseq')
+deconv_heatmap(h_imm_qti, meta, title = 'quanTIseq', show_legend = F)
+
+deconv_heatmap(h_cib_res , meta, title = 'CIBERSORTx abs')
+deconv_heatmap(h_cib_res , meta, title = 'CIBERSORTx abs', show_legend = F)
+
+deconv_heatmap(h_imm_xcell, meta, title = 'xCell', rn_size = 5)
+deconv_heatmap(h_imm_xcell, meta, title = 'xCell', show_legend = F, rn_size = 5)
+```
+
+```{r}
+# Prueba con algunos genes
+deconv_heatmap(h_imm_epic, meta, normDESeq_counts, gene_list = c('CD27','CD247','FOXP3'), title = 'EPIC', cluster_rows = F, cluster_columns = F)
+
+# Se comprueban las muestras con conteos más elevados de estos 3 genes como QC 
+names(sort(normDESeq_counts["CD27", ], decreasing = TRUE)[1:5])
+names(sort(normDESeq_counts["CD247", ], decreasing = TRUE)[1:5])
+names(sort(normDESeq_counts["FOXP3", ], decreasing = TRUE)[1:5])
+```
+
+```{r}
+cib_rows <- c('T cell regulatory', 'NK cells resting', 'NK cells activated')
+
+h_cib_res2 <- h_cib_res %>%
+  filter(row.names(h_cib_res) %in% cib_rows)
+  
+
+deconv_heatmap(h_cib_res2, meta, normDESeq_counts, gene_list = c('CD27','CD247','FOXP3','CTLA4','CD3E'), title = 'CIBERSORTx', cluster_rows = F, show_legend = F)
+```
+
+# Correlación genes \~ tipos celulares
+
+```{r df deconv para correlación}
+# Crear dataframes para correlación
+## EPIC
+c_imm_epic <- imm_epic
+c_imm_epic <- as.data.frame(t(c_imm_epic))
+c_imm_epic <- head(c_imm_epic, -1)
+rn_cimmepic <- rownames(c_imm_epic)
+rn_cimmepic[2] <- "CAFs"
+cl_cimmepic <- colnames(c_imm_epic)
+c_imm_epic <- apply(c_imm_epic, 2, as.numeric)
+rownames(c_imm_epic) <- rn_cimmepic
+colnames(c_imm_epic) <- cl_cimmepic
+c_imm_epic <- as.data.frame(c_imm_epic)
+
+## Quantiseq
+c_imm_qti <- imm_qti
+c_imm_qti <- as.data.frame(t(c_imm_qti))
+c_imm_qti <- head(c_imm_qti, -1)
+rn_cimmqti <- rownames(c_imm_qti)
+rn_cimmqti[7] <- "T cell CD4+"
+rn_cimmqti[9] <- "T cell regulatory"
+cl_cimmqti <- colnames(c_imm_qti)
+c_imm_qti <- apply(c_imm_qti, 2, as.numeric) 
+rownames(c_imm_qti) <- rn_cimmqti
+colnames(c_imm_qti) <- cl_cimmqti
+c_imm_qti <- as.data.frame(c_imm_qti)
+
+## Cibersortx abs
+c_cib_res <- cib_res
+all(rownames(c_cib_res)==rownames(meta))
+c_cib_res <- as.data.frame(t(c_cib_res))
+c_cib_res <- head(c_cib_res, -1)
+rn_hcr <- rownames(c_cib_res)
+rn_hcr[7] <- "T cell CD4+"
+rn_hcr[9] <- "T cell regulatory"
+cl_hcr <- colnames(c_cib_res)
+c_cib_res <- apply(c_cib_res, 2, as.numeric) 
+rownames(c_cib_res) <- rn_hcr
+colnames(c_cib_res) <- cl_hcr
+c_cib_res <- as.data.frame(c_cib_res)
+
+## xCell
+c_imm_xcell <- as.data.frame(imm_xcell)
+
+# Renombrar nombres de poblaciones celulares antes de transponer
+c_imm_xcell <- c_imm_xcell %>%
+  rename('Myeloid DC activated' = 'Myeloid dendritic cell activated') %>%
+  rename('T cell CD4+' = 'T cell CD4+ (non-regulatory)') %>% 
+  rename('Myeloid DC' = 'Myeloid dendritic cell') %>% 
+  rename('CAFs' = 'Cancer associated fibroblast') %>% 
+  rename('Plasmacytoid DC' = 'Plasmacytoid dendritic cell') %>% 
+  rename('T cell regulatory' = 'T cell regulatory (Tregs)') 
+
+# Transponer 
+c_imm_xcell <- as.data.frame(t(c_imm_xcell))
+c_imm_xcell <- head(c_imm_xcell, -4) 
+
+# Poblaciones celulares no interesantes
+xcell_row_delete <- c('Common lymphoid progenitor', 'Common myeloid progenitor',
+                   'Granulocyte-monocyte progenitor', 'Hematopoietic stem cell')
+
+c_imm_xcell <- c_imm_xcell %>%
+  filter(!row.names(.) %in% xcell_row_delete)  # Eliminar filas
+
+rn_cimmxcell <- rownames(c_imm_xcell)
+cl_cimmxcell <- colnames(c_imm_xcell)
+c_imm_xcell <- apply(c_imm_xcell, 2, as.numeric) 
+rownames(c_imm_xcell) <- rn_cimmxcell
+colnames(c_imm_xcell) <- cl_cimmxcell
+c_imm_xcell <- as.data.frame(c_imm_xcell)
+```
+
+```{r cor.test}
+decounts_correlation <- function(count_data, deconv_data, gene_list = NULL, cell_type_list = NULL) {
+  
+  # Función auxiliar para verificar los datos
+  verificar_datos <- function(data, nombre) {
+    if (any(is.na(data))) {
+      stop(paste("Hay datos faltantes (NA) en", nombre))
+    }
+    if (!all(sapply(data, is.numeric))) {
+      stop(paste("Hay datos que no son numéricos en", nombre))
+    }
+  }
+  
+  # Verificar que el orden de las muestras sea el mismo en ambos dataframes
+  if (!all(colnames(count_data) == colnames(deconv_data))) {
+    stop("El orden de las muestras en count_data y deconv_data no es el mismo.")
+  }
+
+  # Verificar count_data y deconv_data usando la función auxiliar
+  verificar_datos(count_data, "count_data")
+  verificar_datos(deconv_data, "deconv_data")
+  
+  # Obtener los nombres de las filas si no se proporcionan listas de selección
+  if (is.null(gene_list)) {
+    gene_list <- rownames(count_data)
+  }
+  if (is.null(cell_type_list)) {
+    cell_type_list <- rownames(deconv_data)
+  }
+
+  # Inicializar los dataframes para almacenar los resultados
+  correlation_df <- data.frame(matrix(NA, nrow = length(gene_list), ncol = length(cell_type_list), dimnames = list(gene_list, cell_type_list)), check.names = FALSE)
+  
+  pvalue_df <- data.frame(matrix(NA, nrow = length(gene_list), ncol = length(cell_type_list), dimnames = list(gene_list, cell_type_list)), check.names = FALSE)
+
+  # Iterar sobre los genes y tipos celulares seleccionados
+  for (gene in gene_list) {
+    for (cell_type in cell_type_list) {
+      # Obtener los valores de expresión del gen y la abundancia del tipo celular
+      gene_expression <- as.numeric(count_data[gene, ])
+      cell_type_abundance <- as.numeric(deconv_data[cell_type, ])
+      
+      # Realizar la prueba de correlación
+      correlation_test <- cor.test(gene_expression, cell_type_abundance)
+      
+      # Almacenar los resultados en los dataframes
+      correlation_df[gene, cell_type] <- correlation_test$estimate
+      pvalue_df[gene, cell_type] <- correlation_test$p.value
+    }
+  }
+
+  # Devuelve los resultados
+  return(list(correlation_df = correlation_df, pvalue_df = pvalue_df))
+}
+
+```
+
+```{r}
+cor_epic <- decounts_correlation(normDESeq_counts, c_imm_epic)
+cor_qti <- decounts_correlation(normDESeq_counts, c_imm_qti)
+cor_cib <- decounts_correlation(normDESeq_counts, c_cib_res)
+cor_xcell <-decounts_correlation(normDESeq_counts, c_imm_xcell)
+```
+
+```{r}
+filter_significant_genes <- function(R, pv, alpha = 0.05) {
+  # Primer filtro: Filtrar filas donde no haya ningún valor absoluto mayor que 0.5
+  strong_correlation <- apply(R, 1, function(r) any(abs(r) > 0.5))
+  filtered_R_step1 <- R[strong_correlation, ]
+  filtered_pv_step1 <- pv[strong_correlation, ]
+  
+  # Segundo filtro: Filtrar las filas de R filtrado en el primer paso donde no haya ningún p-valor menor que alpha
+  significant_genes <- apply(filtered_pv_step1, 1, function(p) any(p < alpha))
+  filtered_R <- filtered_R_step1[significant_genes, ]
+  filtered_pv <- filtered_pv_step1[significant_genes, ]
+  
+  return(list(filtered_R = filtered_R, filtered_pv = filtered_pv))
+}
+```
+
+```{r}
+R_epic <- cor_epic$correlation_df
+pv_epic <- cor_epic$pvalue_df
+sig_epic <- filter_significant_genes(R_epic, pv_epic)
+R_sig_epic <- sig_epic$filtered_R
+
+R_cib <- cor_cib$correlation_df
+pv_cib <- cor_cib$pvalue_df
+sig_cib <- filter_significant_genes(R_cib,pv_cib)
+R_sig_cib <- sig_cib$filtered_R
+```

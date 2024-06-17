@@ -1,0 +1,924 @@
+---
+title: "Tratamiento de datos y QC"
+subtitle: "Transcriptómica HTG"
+author: "Aarón Marcén"
+date: "2024-03-22"
+output:
+  html_document:
+    toc: yes
+    toc_float:
+      collapsed: yes
+      smooth_scroll: yes
+  pdf_document:
+    latex_engine: xelatex
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(tinytex.verbose = TRUE)
+```
+
+```{r librerias, include=FALSE, warning=FALSE, message=FALSE}
+
+# Función de instalación de paquetes 
+installifnot <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    install.packages(pkg)
+  }
+}
+# Función de instalación de paquetes de Bioconductor
+installifnot_Bioc <- function (pkg){
+  if (!require(pkg, character.only=T)){
+    BiocManager::install(pkg)
+  }
+}
+installifnot("here")
+installifnot("readxl")
+installifnot("ggplot2")
+installifnot("gplots")
+installifnot("ggrepel")
+installifnot("grid")
+installifnot("gridExtra")
+installifnot("png")
+installifnot("knitr")
+installifnot("cowplot")
+installifnot("dplyr")
+installifnot("scales")
+installifnot("pheatmap")
+```
+
+# Importación y Curación de Datos
+
+```{r asignaciones, include=FALSE}
+htg_db <- "HTG Transcriptome database.xlsx"
+htg_meta <- "HTG Transcriptome metadata.xlsx"
+```
+
+```{r importación, include=FALSE}
+library(here)
+# Asignación de una ruta relativa asociada al directorio de trabajo 
+ruta1 <- here(htg_db)
+ruta2 <- here(htg_meta)
+
+htg_db <- read_excel(ruta1)
+htg_meta <- read_excel(ruta2)
+```
+
+```{r curación, warning=FALSE, include=FALSE}
+# Corrección de fechas originales por importación del excel a R en htg_db
+valores_a_buscar <- c(44932, 44596)  
+nuevos_valores <- c("06/01/2023", "04/02/2022")   
+
+for (i in seq_along(valores_a_buscar)) {
+  htg_db[3, ] <- ifelse(htg_db[3, ] == valores_a_buscar[i], nuevos_valores[i], htg_db[3, ])
+}
+
+# Columna Sample Name como rownames en htg_db
+rownames_db <- htg_db$`Sample Name`
+htg_db <- htg_db[, -1]
+rownames(htg_db) <- rownames_db
+
+# Corregir el nombre del grupo en htg_meta
+htg_meta$Group <- gsub("DLBCLwo CNS inv", "DLBCL wo CNS inv", htg_meta$Group)
+
+# Columna id como rownames en htg_meta
+rownames_meta <- htg_meta$id
+htg_meta <- htg_meta[, -1]
+rownames(htg_meta) <- rownames_meta
+```
+
+```{r orden db vs meta, include=FALSE, warning=FALSE}
+# Se verifica que todas las columnas de la matriz de counts están en las filas de la matriz de metadatos
+all(colnames(htg_db) %in% rownames(htg_meta))
+
+# Se verifica que las columnas de htg_db y las filas de htg_meta No están en el mismo orden
+all(colnames(htg_db) == rownames(htg_meta))
+
+# Se reordenan las filas de htg_meta en el orden de las columnas de htg_db
+htg_meta <- htg_meta[colnames(htg_db), ]
+rownames(htg_meta) <- colnames(htg_db)
+
+# Se verifica que el orden de filas ahora sí es correcto
+all(colnames(htg_db) == rownames(htg_meta))
+```
+
+```{r cts, include=FALSE}
+# Matriz de counts (sin los primeros campos informativos)
+cts <- htg_db
+cts <- cts[-c(1:4), ]  # Se eliminan campos informativos
+cts <- apply(cts, 2, as.numeric)  # Valores de counts con formato númerico
+rownames(cts) <- rownames(htg_db)[-c(1:4)] # Se restablecen los nombres de fila
+cts <- as.data.frame(cts)
+
+# Vector de total counts
+total_counts <- as.numeric(htg_db[4,])
+```
+
+Se importan los dos archivos excel generados a partir de la base de datos original llamada `HTG_Parsed_database_07.03.2024`. El primero llamado `htg_db` contiene la matriz de counts obtenida a partir de la transcriptómica realizada con la tecnología HTG. El segundo llamado `htg_meta` contiene los metadatos de las muestras del estudio.
+
+El dataframe `htg_db` está compuesto por `r dim(htg_db)[1]` filas, entre las cuales contiene 4 campos (4 primeras filas) con datos identificadores, que indican la fecha en la que se realizó la transcriptómica o que reflejan el número total de counts cuantificados para cada muestra. Y `r dim(htg_db)[2]` columnas, que hacen referencia a las `r dim(htg_db)[2]` muestras del estudio.
+
+A partir de `htg_db` se extrae el dataframe `cts` que únicamente contiene la matriz de counts, con las `r dim(cts)[1]` sondas cuantificadas como filas y las `r dim(cts)[2]` muestras analizadas como columnas.
+
+La matriz de metadatos contiene diferentes campos que informan sobre el origen de las muestras y los pacientes a los que pertenecen, como: el identificador de muestra, el contenido porcentual de células tumorales, la localización del tumor, el diagnóstico del paciente, el grupo experimental al cual ha sido asignado, entre otros.
+
+Se verifica que las mismas muestras están descritas como columnas de la matriz de counts y como filas en la matriz de metadatos. Pero se confirma que no se encuentran en el mismo orden. Por tanto, se procede a reordenar las filas de `htg_meta` para que sigan el orden de las columnas de `htg_db`.
+
+A continuación se muestran las primeras filas de los dataframes `htg_db` y `htg_meta` respectivamente.
+
+```{r head, echo=FALSE}
+head_db <- head(htg_db[, 1:5], 10)
+kable(head_db)
+
+head_meta <- head(htg_meta, 3)
+head_meta$id <- rownames(htg_meta)[c(1:3)]
+head_meta <- head_meta[, c(10, setdiff(1:ncol(head_meta), 10))]
+head_meta <- head_meta[, c(1:5)]
+kable(head_meta)
+```
+
+```{r subsets, echo=FALSE}
+# Subsets de cts 
+first_ctrl <- which(rownames(cts) == "ERCC-00002")
+cts_gens <- as.data.frame(cts[1:(first_ctrl-1), ])
+cts_ctrls<- as.data.frame(cts[first_ctrl:nrow(cts), ])
+```
+
+Una vez curada la matriz de counts `cts`, se procede a realizar dos subsets de esta matriz. El primero llamado `cts_gens` que contiene las filas de la matriz correspondientes a los `r dim(cts_gens)[1]` genes cuantificados. Y el segundo subset llamado `cts_ctrls` que contiene las filas de la matriz correspondientes a los `r dim(cts_ctrls)[1]` controles utilizados por la casa comercial de la plataforma HTG para generar el control de calidad de las muestras.
+
+Finalmente se procede a compilar los nombres repetidos con distintos formatos, en la columna `site` de la matriz de metadatos. Esta columna informa del lugar de obtención de la biopsia. Se muestran dos tablas de frecuencias en función de la variable `site`, antes y después de la compilación.
+
+```{r meta site, echo=FALSE, warning=FALSE}
+# Agrupación por variable site original
+table(htg_meta$site)
+
+# Se vuelve a guardar los nombres de fila debido a que se han reorganizado para que coincidan con el orden de la matriz de counts 
+rownames_meta <- rownames(htg_meta)
+
+# Compilar nombres de lugares de biopsia en htg_meta
+htg_meta$site <- gsub("Brain", "brain", htg_meta$site)
+htg_meta$site <- gsub("LN", "lymph node", htg_meta$site)
+htg_meta$site <- gsub("PIEL", "skin", htg_meta$site)
+
+# Recuperar los nombres de fila correspondientes a las muestras
+rownames(htg_meta) <- rownames_meta
+
+# Agrupación por variable site compilada
+table(htg_meta$site)
+```
+
+```{r tissue group}
+# Se almacenan los nombres de fila 
+rownames_meta <- rownames(htg_meta)
+# Nueva variable tissue_group que simplifica site mediante agrupación
+htg_meta <- htg_meta %>%
+  mutate(tissue_group = case_when(
+    site %in% c("lymph node") ~ "lymph node",
+    site %in% c("BMO") ~ "BMO",
+    site %in% c("clivus", "etmoides") ~ "bone",
+    site %in% c("brain", "brain (vermix)", "vitreo", "retina") ~ "CNS",
+    site %in% c("MEDIASTINUM", "MESENTERIC", "lumbar", "PARARENAL", "soft tissue (thigh)", "skin", "skin skull", "skin/subcutaneous") ~ "soft tissue/skin",
+    site %in% c("VALVULA ILEOCECAL", "rinopharynx") ~ "mucosa",
+    TRUE ~ NA_character_  # Agregar un valor por defecto en caso de que no haya coincidencia
+  ))
+
+# Recuperar los nombres de fila correspondientes a las muestras
+rownames(htg_meta) <- rownames_meta
+```
+
+# Estadística Descriptiva
+
+Para entender el conjunto de datos, se procede a describir la matriz metadatos para entender mejor el contexto de las muestras.
+
+```{r descriptiva, warning=FALSE}
+# Número de muestras por grupo experimental
+table(htg_meta$Group)
+
+# Número de muestras por localización/tejido de la muestra
+table(htg_meta$site)
+
+table(htg_meta$tissue_group)
+
+# Número de historia clínica (NHC) de pacientes con más de una muestra
+t_NHC <- table(htg_meta$NHC)
+t_NHC_ap <- t_NHC[t_NHC>1]
+t_NHC_ap
+```
+
+```{r descriptiva tcc, warning=FALSE, echo=FALSE}
+# Distribución del porcentaje de células tumorales por muestra
+ggplot(htg_meta, aes(x = factor(`tumor cell content`))) +
+  geom_bar(stat = "count", fill = "skyblue4", color = "black") +
+  scale_x_discrete(drop = FALSE) +  # Para mostrar los niveles con NA
+  labs(x = "Porcentaje", y = "Frecuencia") +
+  ggtitle("Tumor cell content") +
+  theme_minimal() +
+  scale_y_continuous(breaks = seq(0, 18, by = 2))
+
+```
+
+# Análisis de la variabilidad
+
+Para iniciar el análisis de los datos, se procede a realizar un análisis de componentes principales (PCA). PCA es un análisis de reducción de la dimensionalidad que transforma un gran conjunto de variables correlacionadas en un nuevo conjunto de pocas variables no correlacionadas, llamadas componentes principales. Estas componentes principales son combinaciones lineales de las variables originales y están ordenadas por la cantidad de variabilidad original que capturan.
+
+A continuación se muestran tres apartados gráficos que representan como se distribuyen las muestras en función de las primeras componentes principales (PCA). En ellos se remarcan y etiquetan las muestras más alejadas del centro promedio de los datos, es decir, las muestras que más difieren del conjunto. El primer apartado está realizado con el total de counts de cada muestra, el segundo con los counts de los genes y el tercero con los counts de los controles.
+
+## PCA de las muestras (counts totales)
+
+```{r PCA 1, echo=FALSE}
+# Realizar el PCA de la matriz cts
+pca_result <- prcomp(t(cts))
+
+# Crear un dataframe con los resultados del PCA
+pca_data <- as.data.frame(pca_result$x[,1:2])
+
+# Agregar una columna "label" y asignar etiquetas a las muestras
+pca_data$label <- rownames(pca_data)
+
+# Calcular el centro promedio en el espacio PCA
+centro_promedio <- colMeans(pca_data[, c("PC1", "PC2")])
+
+# Calcular la distancia de cada muestra al centro promedio en el espacio PCA
+pca_data$distancia_al_centro <- sqrt((pca_data$PC1 - centro_promedio[1])^2 + (pca_data$PC2 - centro_promedio[2])^2)
+
+# Ordenar las muestras por distancia al centro promedio de manera descendente
+pca_data <- pca_data[order(-pca_data$distancia_al_centro), ]
+
+# Seleccionar las muestras más alejadas (por ejemplo, las 6 más alejadas)
+muestras_a_etiquetar <- head(pca_data$label, 6)  
+
+# Crear una nueva columna llamada etiquetada y asignar valores
+pca_data$etiquetada <- ifelse(pca_data$label %in% muestras_a_etiquetar, "Etiquetada", "No etiquetada")
+
+
+# Calcular el porcentaje de variabilidad explicada por cada componente principal
+porcentaje_explicado <- round(100 * pca_result$sdev^2 / sum(pca_result$sdev^2), 2)
+
+# Construir el título del eje x e y con el porcentaje de variabilidad explicada
+titulo_x <- paste0("PC1 (", porcentaje_explicado[1], "%)")
+titulo_y <- paste0("PC2 (", porcentaje_explicado[2], "%)")
+
+# Graficar el PCA con etiquetas para las muestras más alejadas
+ggplot(pca_data, aes(x = PC1, y = PC2, color = etiquetada)) +
+  geom_point() +
+  geom_text_repel(data = subset(pca_data, etiquetada == "Etiquetada"), aes(label = label), color = "red") + 
+  labs(title = "PCA muestras",
+       x = titulo_x,
+       y = titulo_y) +
+  theme(legend.position = "none",
+        plot.margin = margin(0.5, 1, 0.5, 0.5, "cm")) +  
+  scale_color_manual(values = c("Etiquetada" = "red", "No etiquetada" = "black")) +
+  scale_y_continuous(labels = scales::scientific_format())
+```
+
+En el gráfico del PCA se puede observar la similitud entre las muestras del estudio. Comparando la distribución de las muestras entre las dos primeras componentes principales. La suma de ambas recoge aproximadamente la mitad de la variabilidad de las muestras. Se puede ver que el grueso de las muestras se distribuye formando una diagonal ascendente, lo que indica que existe una correlación positiva entre las dos componentes principales. Se remarcan en rojo las muestras más dispares respecto al promedio del conjunto.
+
+A continuación se muestran los datos de las muestras etiquetadas (con menos similitud del conjunto):
+
+```{r muestras destacadas, echo=FALSE, warning=FALSE}
+# Tabla de metadatos de las muestras etiquetadas en el PCA
+metadata_etiq_PCA1 <- htg_meta[muestras_a_etiquetar, ]
+metadata_etiq_PCA1 <- metadata_etiq_PCA1[, c(1:4)]
+rownames(metadata_etiq_PCA1) <- muestras_a_etiquetar
+metadata_etiq_PCA1$id <- muestras_a_etiquetar
+metadata_etiq_PCA1 <- metadata_etiq_PCA1[, c("id",
+                                             setdiff(names(metadata_etiq_PCA1),"id"))]
+
+kable(metadata_etiq_PCA1)
+```
+
+Dado que con las dos primeras componentes principales, se explica la mitad de la variabilidad observada en los datos crudos; se representa a continuación, la variabilidad o varianza explicada por las 10 primeras componentes. Esto se representa mediante una gráfica de barras en la que se indica la varianza acumulada como etiqueta encima de cada barra y mediante una gráfica en la que se muestra la varianza acumulada respecto a cada componente principal.
+
+```{r barplot PCA, echo=FALSE}
+# Tomar los porcentajes de las primeras 10 componentes principales
+porcentaje_explicado_10 <- head(porcentaje_explicado, 10)
+
+# Calcular la varianza explicada acumulada 
+varianza_acumulada <- cumsum(porcentaje_explicado)
+varianza_acumulada_10 <- head(varianza_acumulada,10)
+
+# Crear un dataframe para ggplot
+bardata <- data.frame(Componente = factor(paste("PC", 1:10), levels = paste("PC", 1:10)),
+                      Porcentaje = porcentaje_explicado_10)
+
+# Crear el gráfico de barras con ggplot2
+ggplot(bardata, aes(x = Componente, y = Porcentaje)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_text(aes(label = sprintf("%.2f", varianza_acumulada_10)), 
+            vjust = -0.5, size = 3, color = "black") +
+  labs(title = "10 primeras componentes principales",
+       x = "Componentes principales",
+       y = "Variabilidad explicada (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotar etiquetas del eje x para mejor visualización
+```
+
+```{r PCA varianza explicada, echo=FALSE}
+# Calcular la varianza explicada acumulada 
+varianza_acumulada <- cumsum(porcentaje_explicado)
+varianza_acumulada_10 <- head(varianza_acumulada,10)
+df <- data.frame(varianza_acumulada_10, pc = factor(paste("PC", 1:10, sep=""), levels = paste("PC", 1:10, sep="")))
+
+ggplot(data = df, aes(x = pc, y = varianza_acumulada_10, group = 1)) +
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(x = "Componente principal",
+       y = "Varianza explicada acumulada (%)")
+```
+
+## PCA de las muestras (counts de genes)
+
+En este apartado se repetirán las representaciones anteriores, pero esta vez, se analizarán únicamente, los counts de los genes de interés, excluyendo del análisis los counts pertenecientes a los controles.
+
+```{r PCA 2, echo=FALSE}
+# Realizar el PCA de la matriz cts_gens
+pca_result2 <- prcomp(t(cts_gens))
+
+# Crear un dataframe con los resultados del PCA
+pca_data2 <- as.data.frame(pca_result2$x[,1:2])
+
+# Agregar una columna "label" y asignar etiquetas a las muestras
+pca_data2$label <- rownames(pca_data2)
+
+# Calcular el centro promedio en el espacio PCA
+centro_promedio2 <- colMeans(pca_data2[, c("PC1", "PC2")])
+
+# Calcular la distancia de cada muestra al centro promedio en el espacio PCA
+pca_data2$distancia_al_centro <- sqrt((pca_data2$PC1 - centro_promedio2[1])^2 + (pca_data2$PC2 - centro_promedio2[2])^2)
+
+# Ordenar las muestras por distancia al centro promedio de manera descendente
+pca_data2 <- pca_data2[order(-pca_data2$distancia_al_centro), ]
+
+# Seleccionar las muestras más alejadas 
+muestras_a_etiquetar2 <- head(pca_data2$label, 10)  
+
+# Crear una nueva columna llamada etiquetada y asignar valores
+pca_data2$etiquetada <- ifelse(pca_data2$label %in% muestras_a_etiquetar2, "Etiquetada", "No etiquetada")
+
+
+# Calcular el porcentaje de variabilidad explicada por cada componente principal
+porcentaje_explicado2 <- round(100 * pca_result2$sdev^2 / sum(pca_result2$sdev^2), 2)
+
+# Construir el título del eje x e y con el porcentaje de variabilidad explicada
+titulo_x2 <- paste0("PC1 (", porcentaje_explicado2[1], "%)")
+titulo_y2 <- paste0("PC2 (", porcentaje_explicado2[2], "%)")
+
+# Graficar el PCA con etiquetas para las muestras más alejadas
+ggplot(pca_data2, aes(x = PC1, y = PC2, color = etiquetada)) +
+  geom_point() +
+  geom_text_repel(data = subset(pca_data2, etiquetada == "Etiquetada"), aes(label = label), color = "red") + 
+  labs(title = "PCA muestras (solo genes)",
+       x = titulo_x2,
+       y = titulo_y2) +
+  theme(legend.position = "none",
+        plot.margin = margin(0.5, 1, 0.5, 0.5, "cm")) +  
+  scale_color_manual(values = c("Etiquetada" = "red", "No etiquetada" = "black")) +
+  scale_y_continuous(labels = scales::scientific_format())
+```
+
+```{r muestras destacadas2, echo=FALSE, warning=FALSE}
+# Tabla de metadatos de las muestras etiquetadas en el PCA
+metadata_etiq_PCA2 <- htg_meta[muestras_a_etiquetar2, ]
+rownames(metadata_etiq_PCA2) <- muestras_a_etiquetar2
+metadata_etiq_PCA2 <- metadata_etiq_PCA2[,c(1:4)]
+metadata_etiq_PCA2$id <- muestras_a_etiquetar2
+metadata_etiq_PCA2 <- metadata_etiq_PCA2[, c("id",
+                                             setdiff(names(metadata_etiq_PCA2),"id"))]
+kable(metadata_etiq_PCA2)
+```
+
+```{r barplot PCA2, echo=FALSE}
+# Tomar los porcentajes de las primeras 10 componentes principales
+porcentaje_explicado2_10 <- head(porcentaje_explicado2, 10)
+
+# Calcular la varianza explicada acumulada 
+varianza_acumulada2 <- cumsum(porcentaje_explicado2)
+varianza_acumulada2_10 <- head(varianza_acumulada2,10)
+
+# Crear un dataframe para ggplot
+bardata2 <- data.frame(Componente = factor(paste("PC", 1:10), levels = paste("PC", 1:10)),
+                      Porcentaje = porcentaje_explicado2_10)
+
+# Crear el gráfico de barras con ggplot2
+ggplot(bardata2, aes(x = Componente, y = Porcentaje)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  geom_text(aes(label = sprintf("%.2f", varianza_acumulada2_10)), 
+            vjust = -0.5, size = 3, color = "black") +
+  labs(title = "10 primeras componentes principales",
+       x = "Componentes principales",
+       y = "Variabilidad explicada (%)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))  # Rotar etiquetas del eje x para mejor visualización
+```
+
+```{r PCA 2 varianza explicada, echo=FALSE}
+# Calcular la varianza explicada acumulada 
+varianza_acumulada2 <- cumsum(porcentaje_explicado2)
+varianza_acumulada2_10 <- head(varianza_acumulada2,10)
+df2 <- data.frame(varianza_acumulada2_10, pc = factor(paste("PC", 1:10, sep=""), levels = paste("PC", 1:10, sep="")))
+
+ggplot(data = df2, aes(x = pc, y = varianza_acumulada2_10, group = 1)) +
+  geom_point() +
+  geom_line() +
+  theme_bw() +
+  labs(x = "Componente principal",
+       y = "Varianza explicada acumulada (%)")
+```
+
+A continuación se muestran gráficos PCA comparando las primeras componentes principales y con las muestras clasificadas por grupos experimentales, para ver la variabilidad entre grupos e intra-grupo.
+
+```{r PCA3, echo=FALSE}
+# Realizar el PCA de la matriz cts_gens
+pca_result2 <- prcomp(t(cts_gens))
+
+# Crear un dataframe con los resultados del PCA
+pca_data2 <- as.data.frame(pca_result2$x[,1:4])
+vector_grupo <- htg_meta$Group[match(rownames(pca_data2), rownames(htg_meta))]
+pca_data2$grupo <- factor(vector_grupo)
+
+# Construir el título del eje x e y con el porcentaje de variabilidad explicada
+porcentaje_explicado2 <- round(100 * pca_result2$sdev^2 / sum(pca_result2$sdev^2), 2)
+titulo_x2 <- paste0("PC1 (", porcentaje_explicado2[1], "%)")
+titulo_y2 <- paste0("PC2 (", porcentaje_explicado2[2], "%)")
+
+# Grafica del PCA sin etiquetas para los grupos de muestras y con leyenda
+ggplot(pca_data2, aes(x = PC1, y = PC2, color = grupo)) +
+  geom_point() +
+  labs(title = "PCA de muestras (solo genes)",
+       x = titulo_x2,
+       y = titulo_y2,
+       color = "Grupo") +  # Título de la leyenda
+  theme(plot.margin = margin(0.5, 1, 0.5, 0.5, "cm")) +
+  scale_color_manual(values = c("PCNSL" = "blue", "SCNSL" = "green", 
+                                "DLBCL with CNS inv" = "yellow", 
+                                "DLBCL wo CNS inv" = "red", 
+                                "REACTIVE BRAIN INFILTRATE" = "black")) +
+  scale_y_continuous(labels = scales::scientific_format())
+```
+
+```{r PCA múltiple, echo=FALSE}
+# Crear una lista para almacenar los gráficos
+plots <- list()
+
+# Iterar sobre todas las combinaciones de componentes principales
+for (i in 1:3) {
+  for (j in (i+1):4) {
+    # Crear el gráfico de dispersión para la combinación de componentes i y j
+    p <- ggplot(pca_data2, aes(x = .data[[paste0("PC", i)]], y = .data[[paste0("PC", j)]], color = grupo)) +
+      geom_point() +
+      labs(title = NULL) +  # Eliminar los títulos
+      scale_color_manual(values = c("PCNSL" = "blue", "SCNSL" = "green", 
+                                     "DLBCL with CNS inv" = "yellow", 
+                                     "DLBCL wo CNS inv" = "red", 
+                                     "REACTIVE BRAIN INFILTRATE" = "black")) +
+      theme(legend.position = "none", 
+            axis.text.x = element_text(angle = 45, hjust = 1))
+    # Añadir el gráfico a la lista
+    plots[[length(plots) + 1]] <- p
+  }
+}
+
+# Crear una cuadrícula de gráficos con una leyenda común
+plot_grid(plotlist = plots, nrow = 2, align = "hv", rel_widths = c(2, 2, 2, 1)) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +  # Título centrado
+  labs(title = "Análisis de la varianza PCA") +  # Título general
+  theme(legend.position = "bottom")  # Mover la leyenda a la parte inferior
+```
+
+## PCA de las muestras (counts de controles)
+
+En este apartado se repetirán las representaciones anteriores, pero esta vez, se analizarán únicamente, los counts de los genes de interés, excluyendo del análisis los counts pertenecientes a los controles.
+
+```{r PCA 4, echo=FALSE}
+# Realizar el PCA de la matriz cts_ctrls
+pca_result3 <- prcomp(t(cts_ctrls))
+
+# Crear un dataframe con los resultados del PCA
+pca_data3 <- as.data.frame(pca_result3$x[,1:2])
+
+# Agregar una columna "label" y asignar etiquetas a las muestras
+pca_data3$label <- rownames(pca_data3)
+
+# Calcular el centro promedio en el espacio PCA
+centro_promedio3 <- colMeans(pca_data3[, c("PC1", "PC2")])
+
+# Calcular la distancia de cada muestra al centro promedio en el espacio PCA
+pca_data3$distancia_al_centro <- sqrt((pca_data3$PC1 - centro_promedio3[1])^2 + (pca_data3$PC2 - centro_promedio3[2])^2)
+
+# Ordenar las muestras por distancia al centro promedio de manera descendente
+pca_data3 <- pca_data3[order(-pca_data3$distancia_al_centro), ]
+
+# Seleccionar las muestras más alejadas 
+muestras_a_etiquetar3 <- head(pca_data3$label, 5)  
+
+# Crear una nueva columna llamada etiquetada y asignar valores
+pca_data3$etiquetada <- ifelse(pca_data3$label %in% muestras_a_etiquetar3, "Etiquetada", "No etiquetada")
+
+
+# Calcular el porcentaje de variabilidad explicada por cada componente principal
+porcentaje_explicado3 <- round(100 * pca_result3$sdev^2 / sum(pca_result3$sdev^2), 2)
+
+# Construir el título del eje x e y con el porcentaje de variabilidad explicada
+titulo_x3 <- paste0("PC1 (", porcentaje_explicado3[1], "%)")
+titulo_y3 <- paste0("PC2 (", porcentaje_explicado3[2], "%)")
+
+# Graficar el PCA con etiquetas para las muestras más alejadas
+ggplot(pca_data3, aes(x = PC1, y = PC2, color = etiquetada)) +
+  geom_point() +
+  geom_text_repel(data = subset(pca_data3, etiquetada == "Etiquetada"), aes(label = label), color = "red") + 
+  labs(title = "PCA muestras (solo controles)",
+       x = titulo_x3,
+       y = titulo_y3) +
+  theme(legend.position = "none",
+        plot.margin = margin(0.5, 1, 0.5, 0.5, "cm")) +  
+  scale_color_manual(values = c("Etiquetada" = "red", "No etiquetada" = "black")) +
+  scale_y_continuous(labels = scales::scientific_format())
+```
+
+```{r muestras destacadas3, echo=FALSE, warning=FALSE}
+# Tabla de metadatos de las muestras etiquetadas en el PCA
+metadata_etiq_PCA3 <- htg_meta[muestras_a_etiquetar3, ]
+rownames(metadata_etiq_PCA3) <- muestras_a_etiquetar3
+metadata_etiq_PCA3 <- metadata_etiq_PCA3[,c(1:4)]
+metadata_etiq_PCA3$id <- muestras_a_etiquetar3
+metadata_etiq_PCA3 <- metadata_etiq_PCA3[, c("id",
+                                             setdiff(names(metadata_etiq_PCA3),"id"))]
+kable(metadata_etiq_PCA3)
+```
+
+# CONTROL DE CALIDAD
+
+Debido a que el software original de la empresa HTG EdgeSeq ya no está disponible, parte de las muestras no han sido analizadas por dicho software, que realizaba un control de calidad, en base a los counts de diferentes controles negativos y positivos.
+
+Dado que disponemos de los counts de estos controles y algunas muestras que fueron sometidas al QC, se procede a realizar un PCA de las muestras en base a los counts de los controles para comparar las muestras con "green flag" (muestras que pasaron y que no pasaron el QC del software comercial) respecto a las que no han sido analizadas.
+
+## PCA de las muestras (solo controles)
+
+```{r PCA QC, echo=FALSE}
+# Realizar el PCA de la matriz cts_ctrls
+pca_result3 <- prcomp(t(cts_ctrls))
+
+# Crear un dataframe con los resultados del PCA
+pca_data3 <- as.data.frame(pca_result3$x[,1:4])
+
+# Crear un vector con la variable flag de htg_meta para clasificar
+vector_flag <- htg_meta$`Green flag`[match(rownames(pca_data3), rownames(htg_meta))]
+vector_flag[is.na(vector_flag)] <- "na" # Imputar los valores faltantes
+
+# Factorizar el vector_flag para incluir na como un nivel
+vector_flag <- factor(vector_flag, levels = c("yes", "no", "na"))
+
+pca_data3$flag <- factor(vector_flag) # Añadir el vector como columna de pca_data3
+
+
+# Calcular el porcentaje de variabilidad explicada por cada componente principal
+porcentaje_explicado3 <- round(100 * pca_result3$sdev^2 / sum(pca_result3$sdev^2), 2)
+
+# Construir el título del eje x e y con el porcentaje de variabilidad explicada
+titulo_x3 <- paste0("PC1 (", porcentaje_explicado3[1], "%)")
+titulo_y3 <- paste0("PC2 (", porcentaje_explicado3[2], "%)")
+
+# Construir el título del eje x e y con el porcentaje de variabilidad explicada
+porcentaje_explicado3 <- round(100 * pca_result3$sdev^2 / sum(pca_result3$sdev^2), 2)
+titulo_x3 <- paste0("PC1 (", porcentaje_explicado2[1], "%)")
+titulo_y3 <- paste0("PC2 (", porcentaje_explicado2[2], "%)")
+
+# Grafica del PCA sin etiquetas para los grupos de muestras y con leyenda
+ggplot(pca_data3, aes(x = PC1, y = PC2, color = flag)) +
+  geom_point() +
+  labs(title = "PCA de muestras (controles)",
+       x = titulo_x3,
+       y = titulo_y3,
+       color = "flag") +  # Título de la leyenda
+  theme(plot.margin = margin(0.5, 1, 0.5, 0.5, "cm")) +
+  scale_color_manual(values = c("yes" = "green", "no" = "red", "na" = "black")) +
+  scale_y_continuous(labels = scales::scientific_format()) +
+  scale_x_continuous(labels = scales::scientific_format())
+```
+
+```{r PCA QC múltiple, echo=FALSE}
+# Crear una lista para almacenar los gráficos
+plots_qc <- list()
+
+# Iterar sobre todas las combinaciones de componentes principales
+for (i in 1:3) {
+  for (j in (i+1):4) {
+    # Crear el gráfico de dispersión para la combinación de componentes i y j
+    p <- ggplot(pca_data3, aes(x = .data[[paste0("PC", i)]], y = .data[[paste0("PC", j)]], color = flag)) +
+      geom_point() +
+      labs(title = NULL) +  # Eliminar los títulos
+      scale_color_manual(values = c("yes" = "green", 
+                                    "no" = "red", 
+                                    "na" = "black")) +
+      theme(legend.position = "none", 
+            axis.text.x = element_text(angle = 45, hjust = 1))
+    # Añadir el gráfico a la lista
+    plots_qc[[length(plots_qc) + 1]] <- p
+  }
+}
+
+# Crear una cuadrícula de gráficos con una leyenda común
+plot_grid(plotlist = plots_qc, nrow = 2, align = "hv", rel_widths = c(2, 2, 2, 1)) +
+  theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +  # Título centrado
+  labs(title = "Análisis de la varianza PCA QC") +  # Título general
+  theme(legend.position = "bottom")  # Mover la leyenda a la parte inferior
+```
+
+## Boxplots de genes y controles
+
+Se representa la distribución de counts totales por muestras, en formato boxplot con escala logarítmica. Se muestran boxplots que representan los counts para los genes de las muestras y para los cuatro tipos de controles: de ARN externo o ERCC (external RNA Controls Consortium), Positivos, de contenido de ADN genómico (GDNA) y Negativos.
+
+En ellos se remarcan en rojo, las muestras que no pasaron el QC del software asociado a la plataforma de transcriptómica masiva HTG-seq (HTG Molecular). En verde, los que si pasaron el QC (green flag) y en blanco, los que no se sometieron a dicho QC.
+
+```{r boxplot genes, echo=FALSE}
+# Crear un dataframe con las muestras y la variable flag de htg_meta
+flag <- htg_meta$`Green flag`
+flag_df <- data.frame("Muestra" = colnames(cts_gens), "flag" = flag)
+
+# Ordenar flag_df según la variable flag
+flag_df <- flag_df[order(flag_df$flag), ]
+
+# Reorganizar las columnas en cts_gens según el orden de las muestras en flag_df
+cts_gens_ordered <- cts_gens[, order(match(colnames(cts_gens), flag_df$Muestra))]
+
+# Crear un vector de colores según la variable flag
+colores <- ifelse(flag_df$flag == "yes", "green", ifelse(flag_df$flag == "no", "red", "white"))
+
+# Crear el gráfico de caja con los datos ordenados y colorear según la variable flag
+boxplot(log(cts_gens_ordered + 1), col = colores,
+        xaxt = "n", ylab = "Counts (log scale)", 
+        main = "Counts por muestra (genes)")
+
+# Etiquetar el eje x con las muestras y rotarlas
+axis(1, at = 1:ncol(cts_gens_ordered), labels = colnames(cts_gens_ordered), 
+     las = 2, cex.axis = 0.4)
+```
+
+```{r subsets controles, echo=FALSE}
+# Asignar flag a cts_ctrls
+
+# Reorganizar las columnas en cts_gens según el orden de las muestras en flag_df
+cts_ctrls_ordered <- cts_ctrls[, order(match(colnames(cts_ctrls), 
+                                             flag_df$Muestra))]
+# Subsets de cts_ctrls
+cts_ERCC <- as.data.frame(cts_ctrls_ordered[1:92, ])
+cts_GDNA <- as.data.frame(cts_ctrls_ordered[93:114, ])
+cts_NC <- as.data.frame(cts_ctrls_ordered[115:214, ])
+cts_POS <- as.data.frame(tail(cts_ctrls_ordered, 4))
+```
+
+```{r boxplot ctrls, echo=FALSE}
+# boxplot cts_ERCC
+boxplot(log(cts_ERCC + 1), col = colores,
+        xaxt = "n", ylab = "Counts (log scale)", 
+        main = "Counts por muestra (controles ERCC)")
+
+axis(1, at = 1:ncol(cts_ERCC), labels = colnames(cts_ERCC), 
+     las = 2, cex.axis = 0.4)
+
+# boxplot cts_GDNA
+boxplot(log(cts_GDNA + 1), col = colores,
+        xaxt = "n", ylab = "Counts (log scale)", 
+        main = "Counts por muestra (controles GDNA)")
+
+axis(1, at = 1:ncol(cts_GDNA), labels = colnames(cts_GDNA), 
+     las = 2, cex.axis = 0.4)
+
+# boxplot cts_NC
+boxplot(log(cts_NC + 1), col = colores,
+        xaxt = "n", ylab = "Counts (log scale)", 
+        main = "Counts por muestra (controles NEGATIVOS)")
+
+axis(1, at = 1:ncol(cts_NC), labels = colnames(cts_NC), las = 2, cex.axis = 0.4)
+
+# boxplot cts_POS
+boxplot(log(cts_POS + 1), col = colores,
+        xaxt = "n", ylab = "Counts (log scale)", 
+        main = "Counts por muestra (controles POSITIVOS)")
+
+axis(1, at = 1:ncol(cts_POS), labels = colnames(cts_POS), las = 2, cex.axis = 0.4)
+```
+
+## Barplots de tamaño de librería y mediana de counts por muestra
+
+A continuación se muestra un gráfico que representa el tamaño de librería (counts del total de genes) por muestra y la mediana de counts por muestra:
+
+```{r tamaño librería, echo=FALSE}
+library_size <- colSums(cts_gens_ordered)
+library_median <- apply(cts_gens_ordered, 2, median)
+# Crear el dataframe del tamaño de librería
+lib_s <- data.frame(Sample = colnames(cts_gens_ordered), Size = library_size)
+lib_m <- data.frame(Sample = colnames(cts_gens_ordered), Median = library_median)
+
+# Barplot tamaño libreria
+barplot(lib_s$Size, 
+        names.arg = lib_s$Sample,
+        col = "skyblue4",
+        border = "black",
+        main = "Tamaño de Librería por Muestra",
+        cex.axis = 0.8,
+        cex.names = 0.4,  # Reducir el tamaño de las etiquetas del eje x
+        las = 2)  # Rotar las etiquetas del eje x
+abline(h = 7e+06, col = "red")
+
+# Barplot mediana de counts por muestra
+barplot(lib_m$Median, 
+        names.arg = lib_m$Sample,
+        col = "skyblue4",
+        border = "black",
+        main = "Mediana de Counts por Muestra",
+        cex.axis = 0.8,
+        cex.names = 0.4,  # Reducir el tamaño de las etiquetas del eje x
+        las = 2)  # Rotar las etiquetas del eje x
+abline(h = 5, col = "red")
+```
+
+## Boxplots de criterios de aceptación del QC
+
+Una vez observada la distribución de counts por muestra, se procede a realizar ratios de los counts totales de los distintos tipos de controles, respecto a los counts totales de los genes de cada muestra. Posteriormente, estas ratios son representadas, de forma porcentual, en un diagrama de puntos junto al umbral (línea horizontal roja) de aceptación. Por debajo de este umbral se acepta la muestra y por encima se excluye. En el gráfico de controles negativos el umbral es igual a 10 (por eso no se ve).
+
+```{r ratios, echo=FALSE}
+total_gens <- colSums(cts_gens_ordered)
+total_POS <- colSums(cts_POS)
+total_NC <- colSums(cts_NC)
+total_GDNA <- colSums(cts_GDNA)
+total_ERCC <- colSums(cts_ERCC)
+
+ratios <- data.frame(total_POS,total_GDNA,total_gens,total_NC, total_ERCC)
+ratios$"pos/gens" <- (ratios$total_POS/ratios$total_gens)*100
+ratios$"gdna/gens" <-(ratios$total_GDNA/ratios$total_gens)*100
+ratios$"nc/gens" <- (ratios$total_NC/ratios$total_gens)*100
+ratios$"ercc/gens" <- (ratios$total_ERCC/ratios$total_gens)*100
+
+ratios$muestras <- factor(rownames(ratios))
+
+ratios$flag <- flag_df$flag
+ratios$flag[is.na(ratios$flag)] <- "na" 
+
+colores <- ifelse(ratios$flag == "yes", "green", ifelse(ratios$flag == "no", "red", "black"))
+```
+
+```{r graficos de puntos aceptación QC, echo=FALSE}
+# Controles positivos
+plot(ratios$`pos/gens`, xlab = "", ylab = "pos/gens", col = colores,
+        xaxt = "n", pch=19)
+axis(1, at = 1:nrow(ratios), labels = rownames(ratios), 
+     las = 2, cex.axis = 0.4)
+abline(h = 4, col = "red")
+
+# Controles GDNA
+plot(ratios$`gdna/gens`, xlab = "", ylab = "gdna/gens", col = colores,
+        xaxt = "n", pch=19)
+axis(1, at = 1:nrow(ratios), labels = rownames(ratios), 
+     las = 2, cex.axis = 0.4)
+abline(h = 0.02, col = "red")
+
+# Controles Negativos
+plot(ratios$`nc/gens`, xlab = "", ylab = "nc/gens", col = colores,
+        xaxt = "n", pch=19)
+axis(1, at = 1:nrow(ratios), labels = rownames(ratios), 
+     las = 2, cex.axis = 0.4)
+abline(h = 0.1, col = "red")
+
+# Controles ERCC
+plot(ratios$`ercc/gens`, xlab = "", ylab = "ercc/gens", col = colores,
+        xaxt = "n", pch=19)
+axis(1, at = 1:nrow(ratios), labels = rownames(ratios), 
+     las = 2, cex.axis = 0.4)
+abline(h = 0.05, col = "red")
+```
+
+## Muestras Excluídas
+
+Después de realizar el QC se excluyen las 3 muestras que se sometieron al QC original de HTG Molecular y no lo pasaron, etiquetadas en la variable Green flag como "no". Que son:"3-B17-17894", "3-B17-26615","3-B10-39759". Y las 6 muestras que no han cumplido con los criterios de aceptación impuestos en nuestro QC, incluyendo el tamaño de librería (7.000.000 counts) y la mediana de counts (50), que son: "18-C14-03618","4-B16-38483-1","14-B19-09150-A1","4-B19-09868-B1", "18-B20-24791","18-N20-00167-A14N".
+
+```{r exclusión de muestras, echo=FALSE, warning=FALSE}
+muestras_NO_QC <- c("3-B17-17894", "3-B17-26615","3-B10-39759",
+                    "18-C14-03618","4-B16-38483-1","14-B19-09150-A1",
+                    "4-B19-09868-B1", "18-B20-24791", "18-N20-00167-A14N")
+
+muestras_excluidas <- htg_meta[muestras_NO_QC,]
+rownames(muestras_excluidas) <- muestras_NO_QC
+kable(muestras_excluidas)
+```
+
+# Heatmap
+
+Para finalizar este informe, se compila la información del control de calidad con anotaciones de metadatos, para comprender el conjunto de muestras.
+
+```{r metadata a ratios, echo=FALSE}
+# Añadir las columnas de htg_meta a ratios manteniendo el orden original de ratios
+ratios[, c("tumor cell content", "tissue_group", "site", "Dx", "Group")] <- htg_meta[match(rownames(ratios), rownames(htg_meta)), c("tumor cell content", "tissue_group", "site", "Dx", "Group")]
+
+# Ordenación jerárquica de las muestras en el dataframe ratios
+
+# Orden para la variable "Group"
+orden_group <- c("PCNSL", "SCNSL", "DLBCL with CNS inv", "DLBCL wo CNS inv", "REACTIVE BRAIN INFILTRATE")
+
+# Orden para la variable "tissue_group"
+orden_tissue_group <- c("CNS","lymph node","BMO","bone","mucosa","soft tissue/skin")
+
+# Orden para la variable "site"
+orden_site <- c("brain", "brain (vermix)", "retina", "vitreo", "lymph node", "BMO", "clivus", "etmoides", "lumbar", "skin", "skin skull", "skin/subcutaneous", "MEDIASTINUM", "MESENTERIC", "PARARENAL", "rinopharynx", "soft tissue (thigh)", "VALVULA ILEOCECAL")
+
+# Orden para la variable "flag"
+orden_flag <- c("no", "yes", "na")
+
+# Convertir las columnas en factores con los órdenes descritos
+ratios$Group <- factor(ratios$Group, levels = orden_group)
+ratios$tissue_group <- factor(ratios$tissue_group, levels = orden_tissue_group)
+ratios$site <- factor(ratios$site, levels = orden_site)
+ratios$flag <- factor(ratios$flag, levels = orden_flag)
+
+# Ordenar el dataframe en función de los criterios
+ratios <- ratios %>%
+  arrange(Group, tissue_group, site, flag)
+```
+
+```{r ratios_heat, echo=FALSE}
+# Nueva matriz a partir de las columnas de los valores de ratios de los controles
+ratios_heat <- ratios[, c(6:9)]
+ratios_heat <- as.matrix(ratios_heat)
+
+# Se añade una cuarta columna a ratios_heat con los tamaños de librería de lib_s
+ratios_heat <- cbind(ratios_heat, Size = "")
+ratios_heat[,"Size"] <- lib_s[match(rownames(ratios_heat), rownames(lib_s)),"Size"]
+
+# Se añade una quinta columna a ratios_heat con las medianas de counts de lib_m
+ratios_heat <- cbind(ratios_heat, Median = "")
+ratios_heat[,"Median"] <- lib_m[match(rownames(ratios_heat), rownames(lib_m)),"Median"]
+ratios_heat <- as.data.frame(ratios_heat)
+
+# Se convierten los valores de ratios_heat a numéricos
+ratios_heat[] <- as.data.frame(lapply(ratios_heat, as.numeric))
+```
+
+```{r bin_matrix, echo=FALSE}
+# Función para asignar 01 según el valor QC
+assign_01_QC <- function(valor, umbral){
+  ifelse(valor < umbral, 0, 1)
+}
+
+# Función para asignar 01 según el valor tamaño librería y mediana counts
+assign_01_lib <- function(valor, umbral){
+  ifelse(valor > umbral, 0, 1)
+}
+
+# Especificar los umbrales para los colores
+umbral_pos <- 4
+umbral_gdna <- 0.02
+umbral_neg <- 0.1
+umbral_ercc <- 0.05
+umbral_size <- 7e+06
+umbral_median <- 5
+
+# Crear matriz binaria para el heatmap
+bin_matrix <- matrix(0, nrow = nrow(ratios_heat), ncol = 6)
+for (i in 1:nrow(ratios_heat)) {
+  bin_matrix[i, 1] <- assign_01_QC(ratios_heat[i, "pos/gens"], umbral_pos) 
+  bin_matrix[i, 2] <- assign_01_QC(ratios_heat[i, "gdna/gens"], umbral_gdna)
+  bin_matrix[i, 3] <- assign_01_QC(ratios_heat[i, "nc/gens"], umbral_neg)
+  bin_matrix[i, 4] <- assign_01_QC(ratios_heat[i, "ercc/gens"], umbral_ercc)
+  bin_matrix[i, 5] <- assign_01_lib(ratios_heat[i,"Size"], umbral_size)
+  bin_matrix[i, 6] <- assign_01_lib(ratios_heat[i,"Median"], umbral_median)
+}
+
+# Nombres de filas y columnas
+rownames(bin_matrix) <- rownames(ratios_heat)
+colnames(bin_matrix) <- c("POSqc","GDNAqc","NEGqc","ERCCqc","LibSize","LibMedian")
+```
+
+```{r pheatmap, echo=FALSE}
+# Dataframe an_col con las columnas de anotación del heatmap
+an_col <- ratios[, c("flag", "tissue_group", "Group")]
+colnames(an_col) <- c("Flag", "Tissue", "Group")
+
+# Dataframe an_colors con los colores para las anotaciones
+an_colors <- list(
+  Group = c("PCNSL" = "#00BF7D", "SCNSL" = "#E76BF3", 
+            "DLBCL with CNS inv" = "#F8766D","DLBCL wo CNS inv" = "#C8AF00", 
+            "REACTIVE BRAIN INFILTRATE" = "#00B0F6"), 
+  
+  Tissue = c("BMO" = "#FF9646","bone" ="mediumpurple1", 
+             "CNS" = "palevioletred1","lymph node" = "lightskyblue", 
+             "mucosa" = "lightgreen","soft tissue/skin"= "#FFF059"), 
+  
+  Flag = c("yes" = "olivedrab3", "no" = "indianred3", "na" = "grey")         
+)
+
+pheatmap(bin_matrix,
+         annotation_row = an_col,  
+         cluster_rows = FALSE,   
+         cluster_cols = FALSE,
+         fontsize_row = 4,
+         fontsize = 8,
+         annotation_colors = an_colors,
+         legend_breaks = c(0, 1), 
+         legend_labels = c("OK", "NO"),
+         cellwidth = 30,
+         name = "QC"
+         )  
+
+```
